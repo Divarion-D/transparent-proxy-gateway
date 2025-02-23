@@ -32,6 +32,12 @@ check_root() {
     fi
 }
 
+install_dependencies() {
+    log_message "Установка зависимостей..."
+    apt update -y 2>&1 | tee -a "$LOG_FILE"
+    apt install -y ipset dnsmasq redsocks network-manager isc-dhcp-server net-tools iproute2 iptables-persistent 2>&1 | tee -a "$LOG_FILE"
+}
+
 select_interfaces() {
     INTERFACES=($(ip link show | awk -F': ' '/^[0-9]+: (e|w)/ && !/lo|docker|veth/ {print $2}'))
     
@@ -101,12 +107,6 @@ EOF
     systemctl enable isc-dhcp-server 2>&1 | tee -a "$LOG_FILE"
 }
 
-install_dependencies() {
-    log_message "Установка зависимостей..."
-    apt update -y 2>&1 | tee -a "$LOG_FILE"
-    apt install -y ipset dnsmasq redsocks network-manager isc-dhcp-server net-tools iproute2 iptables-persistent 2>&1 | tee -a "$LOG_FILE"
-}
-
 configure_redsocks() {
     log_message "Настройка RedSocks..."
     cat > "$REDSOCKS_CONFIG" <<EOF
@@ -120,10 +120,10 @@ base {
 redsocks {
     local_ip = 0.0.0.0;
     local_port = 12345;
-    ip = ваш.proxy.server;
-    port = прокси-порт;
-    # login = anonymous2;
-    # password = verystrongpassword;
+    ip = proxy_ip;
+    port = proxy_port;
+    # login = proxy_login;
+    # password = proxy_password;
     type = socks5;
 }
 EOF
@@ -232,8 +232,8 @@ add_update_script_to_croon() {
 
 full_install() {
     check_root
-    select_interfaces
     install_dependencies
+    select_interfaces
     configure_netplan
     configure_dhcp
     configure_wan
