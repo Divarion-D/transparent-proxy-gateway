@@ -9,15 +9,30 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') $1" | tee -a "$LOG_DIR/ip-update.log"
 }
 
-validate_ip() {
-    [[ "$1" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && return 0 || return 1
+validate_ipv4() {
+    [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && return 0
+    return 1
+}
+
+validate_ipv4_cidr() {
+    [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]{1,2})$ ]] && return 0
+    return 1
+}
+
+validate_ipv6() {
+    [[ "$1" =~ ^([0-9a-fA-F:]+:+)+[0-9a-fA-F]+$ ]] && return 0
+    return 1
+}
+
+validate_ipv6_cidr() {
+    [[ "$1" =~ ^([0-9a-fA-F:]+:+)+[0-9a-fA-F]+/([0-9]{1,3})$ ]] && return 0
+    return 1
 }
 
 has_valid_entries() {
     grep -qEv '^[[:blank:]]*($|#)' "$1"
 }
 
-# Создаем директории, если их нет
 mkdir -p "$LOG_DIR" "$(dirname "$CACHE_FILE")" || {
     echo "Ошибка создания директорий";
     exit 1;
@@ -25,11 +40,13 @@ mkdir -p "$LOG_DIR" "$(dirname "$CACHE_FILE")" || {
 
 log "Начало обработки"
 
-# Инициализация временных файлов
-TMP_CACHE=$(mktemp)
-TMP_IPS=$(mktemp)
+TMP_CACHE_V4=$(mktemp)
+TMP_CACHE_V6=$(mktemp)
+TMP_IPS_V4=$(mktemp)
+TMP_IPS_V6=$(mktemp)
+TMP_CIDR_V4=$(mktemp)
+TMP_CIDR_V6=$(mktemp)
 
-# Функция обработки файла с доменами и IP
 process_file() {
     local file="$1"
     log "Обработка файла: $file"
@@ -37,67 +54,66 @@ process_file() {
     while read -r entry; do
         [[ -z "$entry" || "$entry" == \#* ]] && continue
         
-        # Проверка, является ли строка IP-адресом или доменом
-        if validate_ip "$entry"; then
-            echo "$entry" >> "$TMP_IPS"
+        if validate_ipv4 "$entry"; then
+            echo "$entry" >> "$TMP_IPS_V4"
+        elif validate_ipv4_cidr "$entry"; then
+            echo "$entry" >> "$TMP_CIDR_V4"
+        elif validate_ipv6 "$entry"; then
+            echo "$entry" >> "$TMP_IPS_V6"
+        elif validate_ipv6_cidr "$entry"; then
+            echo "$entry" >> "$TMP_CIDR_V6"
         else
             log "Резолвинг: $entry"
-            ips=$(dig +short @$DNS_SERVER "$entry" A 2>/dev/null | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$')
+            ips=$(dig +short @$DNS_SERVER "$entry" A 2>/dev/null | grep -E '^[0-9\.]+$')
+            ips_v6=$(dig +short @$DNS_SERVER "$entry" AAAA 2>/dev/null | grep -E '^[0-9a-fA-F:]+$')
+            
             if [ -n "$ips" ]; then
-                echo "$ips" >> "$TMP_IPS"
-                log "Найден IP: $(echo "$ips" | tr '\n' ' ')"
-            else
-                log "Не удалось резолвить: $entry"
+                echo "$ips" >> "$TMP_IPS_V4"
+                log "Найден IPv4: $(echo "$ips" | tr '\n' ' ')"
+            fi
+            if [ -n "$ips_v6" ]; then
+                echo "$ips_v6" >> "$TMP_IPS_V6"
+                log "Найден IPv6: $(echo "$ips_v6" | tr '\n' ' ')"
             fi
         fi
     done < <(grep -v -e '^[[:space:]]*$' -e '^#' "$file")
 }
 
-# Сканирование всех файлов в ROUTING_DIR, а также DOMAIN_LIST и IPS_LIST
 for file in "$ROUTING_DIR"/* "$DOMAIN_LIST" "$IPS_LIST"; do
     [ -f "$file" ] && has_valid_entries "$file" && process_file "$file"
 done
 
-# Удаление дубликатов и сохранение в кэш
-if [ -s "$TMP_IPS" ]; then
-    log "Генерация кеша с уникальными IP"
-    sort -u "$TMP_IPS" > "$TMP_CACHE"
-    TOTAL_IPS=$(wc -l < "$TMP_CACHE")
-    log "Найдено уникальных IP: $TOTAL_IPS"
+sort -u "$TMP_IPS_V4" > "$TMP_CACHE_V4"
+sort -u "$TMP_CIDR_V4" >> "$TMP_CACHE_V4"
+sort -u "$TMP_IPS_V6" > "$TMP_CACHE_V6"
+sort -u "$TMP_CIDR_V6" >> "$TMP_CACHE_V6"
 
-    mv "$TMP_CACHE" "$CACHE_FILE" || log "Ошибка сохранения кеш-файла"
-else
-    log "Нет IP для обработки - очищаем кеш"
-    > "$CACHE_FILE"
-fi
+mv "$TMP_CACHE_V4" "$CACHE_FILE_V4"
+mv "$TMP_CACHE_V6" "$CACHE_FILE_V6"
 
-# Обновление ipset и iptables
-if [ -s "$CACHE_FILE" ]; then
+if [ -s "$CACHE_FILE_V4" ]; then
     log "Обновление ipset $IPSET_NAME"
-    
-    # Создание/очистка ipset
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
-        ipset create "$IPSET_NAME" hash:ip timeout 0 || log "Ошибка создания ipset"
+        ipset create "$IPSET_NAME" hash:net family inet timeout 0 || log "Ошибка создания ipset IPv4"
     else
-        ipset flush "$IPSET_NAME" || log "Ошибка очистки ipset"
+        ipset flush "$IPSET_NAME" || log "Ошибка очистки ipset IPv4"
     fi
-    
-    # Добавление IP в ipset
-    added=0
     while read -r ip; do
-        if ipset add "$IPSET_NAME" "$ip"; then
-            ((added++))
-        else
-            log "Ошибка добавления IP: $ip"
-        fi
-    done < "$CACHE_FILE"
-
-    log "Успешно добавлено IP: $added/$TOTAL_IPS"
-else
-    log "Кеш пуст - очищаем ipset"
-    ipset flush "$IPSET_NAME" || log "Ошибка очистки ipset"
+        ipset add "$IPSET_NAME" "$ip" || log "Ошибка добавления IPv4: $ip"
+    done < "$CACHE_FILE_V4"
 fi
 
-# Очистка временных файлов
-rm -f "$TMP_IPS" "$TMP_CACHE"
+if [ -s "$CACHE_FILE_V6" ]; then
+    log "Обновление ipset ${IPSET_NAME}_v6"
+    if ! ipset list "${IPSET_NAME}_v6" >/dev/null 2>&1; then
+        ipset create "${IPSET_NAME}_v6" hash:net family inet6 timeout 0 || log "Ошибка создания ipset IPv6"
+    else
+        ipset flush "${IPSET_NAME}_v6" || log "Ошибка очистки ipset IPv6"
+    fi
+    while read -r ip; do
+        ipset add "${IPSET_NAME}_v6" "$ip" || log "Ошибка добавления IPv6: $ip"
+    done < "$CACHE_FILE_V6"
+fi
+
+rm -f "$TMP_IPS_V4" "$TMP_IPS_V6" "$TMP_CIDR_V4" "$TMP_CIDR_V6" "$TMP_CACHE_V4" "$TMP_CACHE_V6"
 log "Обработка завершена"

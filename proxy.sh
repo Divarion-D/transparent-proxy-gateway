@@ -19,10 +19,11 @@ show_help() {
     echo "Использование: $0 [опция]"
     echo "Опции:"
     echo "  --install               Полная установка системы"
+    echo "  --uninstall             Полное удаление шлюза"
     echo "  --wan                   Настройка/изменение WAN подключения"
     echo "  --update-ips            Принудительное обновление IP-адресов"
     echo "  --restart-redsocks      Перезапуск readsocks"
-    echo "  --uninstall             Полное удаление шлюза"
+    echo "  --reconfigure_firewall  Переконфигурация фаервола"
     echo "  --help                  Показать эту справку"
     exit 0
 }
@@ -96,15 +97,15 @@ default-lease-time 600;
 max-lease-time 7200;
 
 subnet 10.0.0.0 netmask 255.255.255.0 {
-    range 10.0.0.100 10.0.0.200;
+    range 10.0.0.50 10.0.0.250;
     option routers 10.0.0.1;
 }
 EOF
 
     echo "INTERFACESv4=\"$LAN_IFACE\"" > /etc/default/isc-dhcp-server
 
-    systemctl enable isc-dhcp-server 2>&1 | tee -a "$LOG_FILE"
     systemctl restart isc-dhcp-server
+    systemctl enable isc-dhcp-server 2>&1 | tee -a "$LOG_FILE"
 }
 
 configure_redsocks() {
@@ -211,17 +212,54 @@ configure_wan() {
 }
 
 configure_firewall() {
-    log_message "Cоздание ipset..."
+    log_message "Создание ipset ${IPSET_NAME}_v4"
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
-        ipset create "$IPSET_NAME" hash:ip timeout 0 || log_message "Ошибка создания ipset"
-    else
-        ipset flush "$IPSET_NAME" || log_message "Ошибка очистки ipset"
+        ipset create "$IPSET_NAME" hash:net family inet timeout 0 || log_message "Ошибка создания ipset IPv4"
     fi
+
+    log_message "Создание ipset ${IPSET_NAME}_v6"
+    if ! ipset list "${IPSET_NAME}_v6" >/dev/null 2>&1; then
+        ipset create "${IPSET_NAME}_v6" hash:net family inet6 timeout 0 || log_message "Ошибка создания ipset IPv6"
+    fi
+
+    # Если WAN интерфейс не указан
+    if [ -z "$WAN_IFACE" ]; then
+        INTERFACES=($(ip link show | awk -F': ' '/^[0-9]+: (e|w)/ && !/lo|docker|veth/ {print $2}'))
+        log_message "Доступные сетевые интерфейсы:"
+        for i in "${!INTERFACES[@]}"; do
+            echo "$((i+1)). ${INTERFACES[$i]}"
+        done
+
+        read -p "Выберите номер интерфейса для WAN: " WAN_NUM
+        WAN_IFACE=${INTERFACES[$((WAN_NUM-1))]}
+    fi
+
+    # Проверяем наличие правил в iptables
     log_message "Настройка iptables..."
-    iptables -t nat -N PROXY_ROUTE
-    iptables -t nat -A PREROUTING -j PROXY_ROUTE
-    iptables -t nat -A PROXY_ROUTE -m set --match-set $IPSET_NAME dst -p tcp -j REDIRECT --to-port 12345
-    iptables -t nat -A POSTROUTING -o $WAN_IFACE -j MASQUERADE
+
+    # Выключаем службу
+    systemctl stop netfilter-persistent
+    # Проверка наличия цепочки PROXY_ROUTE
+    if ! iptables -t nat -L PROXY_ROUTE -n | grep -q "Chain PROXY_ROUTE"; then
+        iptables -t nat -N PROXY_ROUTE
+    fi
+
+    # Проверка наличия правила в PREROUTING
+    if ! iptables -t nat -C PREROUTING -j PROXY_ROUTE 2>/dev/null; then
+        iptables -t nat -A PREROUTING -j PROXY_ROUTE
+    fi
+
+    # Проверка наличия правила перенаправления
+    if ! iptables -t nat -C PROXY_ROUTE -m set --match-set "$IPSET_NAME" dst -p tcp -j REDIRECT --to-port 12345 2>/dev/null; then
+        iptables -t nat -A PROXY_ROUTE -m set --match-set "$IPSET_NAME" dst -p tcp -j REDIRECT --to-port 12345
+    fi
+
+    # Проверка наличия правила MASQUERADE в POSTROUTING
+    if ! iptables -t nat -C POSTROUTING -o "$WAN_IFACE" -j MASQUERADE 2>/dev/null; then
+        iptables -t nat -A POSTROUTING -o "$WAN_IFACE" -j MASQUERADE
+    fi
+
+    # Сохраняем изменения и включаем службу
     netfilter-persistent save 2>&1 | tee -a "$LOG_FILE"
     systemctl enable netfilter-persistent
 }
@@ -259,7 +297,7 @@ install() {
     update_ips
     configure_firewall
     configure_ip_forwarding
-    log_message "Установка завершена!"
+    log_message "Установка завершена! Рекомендуется перезагрузка."
 }
 
 uninstall() {
@@ -339,6 +377,11 @@ main() {
             LOG_FILE="$LOG_DIR/restart-$(date +%Y%m%d-%H%M%S).log"
             check_root
             restart_redsocks
+            ;;
+        "--reconfigure_firewall")
+            LOG_FILE="$LOG_DIR/firewal-$(date +%Y%m%d-%H%M%S).log"
+            check_root
+            configure_firewall
             ;;
         "--help")
             show_help
