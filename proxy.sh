@@ -22,6 +22,7 @@ show_help() {
     echo "  --wan                   Настройка/изменение WAN подключения"
     echo "  --update-ips            Принудительное обновление IP-адресов"
     echo "  --restart-redsocks      Перезапуск readsocks"
+    echo "  --uninstall             Полное удаление шлюза"
     echo "  --help                  Показать эту справку"
     exit 0
 }
@@ -89,9 +90,7 @@ EOF
 }
 
 configure_dhcp() {
-    log_message "Установка и настройка DHCP-сервера..."
-    apt install -y isc-dhcp-server 2>&1 | tee -a "$LOG_FILE"
-
+    log_message "Настройка DHCP-сервера..."
     cat > /etc/dhcp/dhcpd.conf <<EOF
 default-lease-time 600;
 max-lease-time 7200;
@@ -104,8 +103,8 @@ EOF
 
     echo "INTERFACESv4=\"$LAN_IFACE\"" > /etc/default/isc-dhcp-server
 
-    systemctl restart isc-dhcp-server
     systemctl enable isc-dhcp-server 2>&1 | tee -a "$LOG_FILE"
+    systemctl restart isc-dhcp-server
 }
 
 configure_redsocks() {
@@ -212,6 +211,12 @@ configure_wan() {
 }
 
 configure_firewall() {
+    log_message "Cоздание ipset..."
+    if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
+        ipset create "$IPSET_NAME" hash:ip timeout 0 || log_message "Ошибка создания ipset"
+    else
+        ipset flush "$IPSET_NAME" || log_message "Ошибка очистки ipset"
+    fi
     log_message "Настройка iptables..."
     iptables -t nat -N PROXY_ROUTE
     iptables -t nat -A PREROUTING -j PROXY_ROUTE
@@ -243,8 +248,7 @@ EOF
     systemctl restart cron
 }
 
-full_install() {
-    check_root
+install() {
     install_dependencies
     select_interfaces
     configure_netplan
@@ -252,9 +256,47 @@ full_install() {
     configure_wan
     configure_redsocks
     add_update_script_to_cron
+    update_ips
     configure_firewall
     configure_ip_forwarding
     log_message "Установка завершена!"
+}
+
+uninstall() {
+    log_message "Начало удаления системы..."
+    
+    # Остановка сервисов
+    systemctl stop redsocks isc-dhcp-server 2>/dev/null
+    systemctl disable redsocks isc-dhcp-server 2>/dev/null
+    systemctl daemon-reload
+    
+    # Удаление DHCP сервера
+    log_message "Удаление DHCP сервера..."
+    apt-get purge -y isc-dhcp-server 2>&1 | tee -a "$LOG_FILE"
+    rm -f /etc/dhcp/dhcpd.conf
+    rm -f /etc/default/isc-dhcp-server
+    
+    # Удаление правил iptables
+    iptables -t nat -F PREROUTING
+    iptables -t nat -F PROXY_ROUTE
+    iptables -t nat -X PROXY_ROUTE 2>/dev/null
+    iptables -t nat -D PREROUTING -j PROXY_ROUTE 2>/dev/null
+    netfilter-persistent save
+    
+    # Удаление ipset
+    ipset flush "$IPSET_NAME" 2>/dev/null
+    ipset destroy "$IPSET_NAME" 2>/dev/null
+    
+    # Удаление конфигов
+    rm -rf /etc/netplan/01-gateway.yaml
+    rm -f /etc/cron.d/proxy_update
+    rm -f /etc/systemd/system/redsocks.service
+    
+    # Восстановление сети
+    nmcli con del WAN 2>/dev/null
+    netplan apply
+    
+    log_message "Удаление завершено! Рекомендуется перезагрузка."
 }
 
 update_ips() {
@@ -274,7 +316,13 @@ main() {
     case $1 in
         "--install")
             LOG_FILE="$LOG_DIR/install-$(date +%Y%m%d-%H%M%S).log"
-            full_install
+            check_root
+            install
+            ;;
+        "--uninstall")
+            LOG_FILE="$LOG_DIR/uninstall-$(date +%Y%m%d-%H%M%S).log"
+            check_root
+            uninstall
             ;;
         "--wan")
             LOG_FILE="$LOG_DIR/wan-$(date +%Y%m%d-%H%M%S).log"
@@ -284,10 +332,12 @@ main() {
             ;;
         "--update-ips")
             LOG_FILE="$LOG_DIR/update-$(date +%Y%m%d-%H%M%S).log"
+            check_root
             update_ips
             ;;
         "--restart-redsocks")
             LOG_FILE="$LOG_DIR/restart-$(date +%Y%m%d-%H%M%S).log"
+            check_root
             restart_redsocks
             ;;
         "--help")
@@ -295,6 +345,7 @@ main() {
             ;;
         *)
             LOG_FILE="$LOG_DIR/default-$(date +%Y%m%d-%H%M%S).log"
+            check_root
             show_help
             ;;
     esac
