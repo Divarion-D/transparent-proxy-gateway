@@ -6,6 +6,7 @@ REDSOCKS_LOG_DIR="$LOG_DIR/redsocks"
 
 CONFIG_DIR="$SCRIPT_DIR/config"
 SCRIPTS_DIR="$SCRIPT_DIR/scripts"
+ROUTING_DIR="$SCRIPT_DIR/routing"
 
 DOMAIN_LIST="$CONFIG_DIR/domains.txt"
 IPS_LIST="$CONFIG_DIR/ips.txt"

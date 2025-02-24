@@ -7,7 +7,7 @@ source config.sh || {
 }
 
 init_dirs() {
-    mkdir -p "$LOG_DIR" "$CONFIG_DIR" "$SCRIPTS_DIR" "$REDSOCKS_LOG_DIR"
+    mkdir -p "$LOG_DIR" "$CONFIG_DIR" "$SCRIPTS_DIR" "$REDSOCKS_LOG_DIR" "$ROUTING_DIR"
     touch "$DOMAIN_LIST" "$IPS_LIST"
 }
 
@@ -35,7 +35,7 @@ check_root() {
 install_dependencies() {
     log_message "Установка зависимостей..."
     apt update -y 2>&1 | tee -a "$LOG_FILE"
-    apt install -y ipset dnsmasq redsocks network-manager isc-dhcp-server net-tools iproute2 iptables-persistent 2>&1 | tee -a "$LOG_FILE"
+    apt install -y ipset dnsmasq redsocks network-manager isc-dhcp-server net-tools iproute2 iptables-persistent curl jq 2>&1 | tee -a "$LOG_FILE"
 }
 
 select_interfaces() {
@@ -217,6 +217,7 @@ configure_firewall() {
     iptables -t nat -A PROXY_ROUTE -m set --match-set $IPSET_NAME dst -p tcp -j REDIRECT --to-port 12345
     iptables -t nat -A POSTROUTING -o $WAN_IFACE -j MASQUERADE
     netfilter-persistent save 2>&1 | tee -a "$LOG_FILE"
+    systemctl enable netfilter-persistent
 }
 
 configure_ip_forwarding() {
@@ -225,9 +226,20 @@ configure_ip_forwarding() {
     echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
 }
 
-add_update_script_to_croon() {
+add_update_script_to_cron() {
     chmod +x "$SCRIPTS_DIR/update_ips.sh"
-    echo "0 * * * * root $SCRIPTS_DIR/update_ips.sh" > /etc/cron.d/proxy_update
+
+    # Добавляем задание в cron: запуск при старте системы и каждые 3 часа
+    cat > /etc/cron.d/proxy_update <<EOF
+# Запуск при старте системы
+@reboot root $SCRIPTS_DIR/update_ips.sh
+
+# Запуск каждые 3 часа
+0 */3 * * * root $SCRIPTS_DIR/update_ips.sh
+EOF
+
+    # Перезапускаем cron, чтобы изменения применились
+    systemctl restart cron
 }
 
 full_install() {
@@ -238,7 +250,7 @@ full_install() {
     configure_dhcp
     configure_wan
     configure_redsocks
-    add_update_script_to_croon
+    add_update_script_to_cron
     configure_firewall
     configure_ip_forwarding
     log_message "Установка завершена!"
