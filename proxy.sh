@@ -18,10 +18,11 @@ log_message() {
 show_help() {
     echo "Использование: $0 [опция]"
     echo "Опции:"
-    echo "  --install      Полная установка системы"
-    echo "  --wan          Настройка/изменение WAN подключения"
-    echo "  --update-ips   Принудительное обновление IP-адресов и перезапуск readsocks"
-    echo "  --help         Показать эту справку"
+    echo "  --install               Полная установка системы"
+    echo "  --wan                   Настройка/изменение WAN подключения"
+    echo "  --update-ips            Принудительное обновление IP-адресов"
+    echo "  --restart-redsocks      Перезапуск readsocks"
+    echo "  --help                  Показать эту справку"
     exit 0
 }
 
@@ -260,7 +261,9 @@ update_ips() {
     log_message "Запуск обновления IP..."
     "$SCRIPTS_DIR/update_ips.sh"
     log_message "Обновление завершено"
-    
+}
+
+restart_redsocks() {
     log_message "Перезапуск RedSocks..."
     systemctl restart redsocks
     log_message "RedSocks перезапущен"
@@ -282,6 +285,10 @@ main() {
         "--update-ips")
             LOG_FILE="$LOG_DIR/update-$(date +%Y%m%d-%H%M%S).log"
             update_ips
+            ;;
+        "--restart-redsocks")
+            LOG_FILE="$LOG_DIR/restart-$(date +%Y%m%d-%H%M%S).log"
+            restart_redsocks
             ;;
         "--help")
             show_help
