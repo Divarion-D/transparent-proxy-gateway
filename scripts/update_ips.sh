@@ -77,7 +77,7 @@ if [ -s "$CACHE_FILE" ]; then
     
     # Создание/очистка ipset
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
-        ipset create "$IPSET_NAME" hash:ip timeout 300 || log "Ошибка создания ipset"
+        ipset create "$IPSET_NAME" hash:ip timeout 0 || log "Ошибка создания ipset"
     else
         ipset flush "$IPSET_NAME" || log "Ошибка очистки ipset"
     fi
