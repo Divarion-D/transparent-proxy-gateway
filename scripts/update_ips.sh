@@ -64,8 +64,8 @@ process_file() {
             echo "$entry" >> "$TMP_CIDR_V6"
         else
             log "Резолвинг: $entry"
-            ips=$(dig +short @$DNS_SERVER "$entry" A 2>/dev/null | grep -E '^[0-9\.]+$')
-            ips_v6=$(dig +short @$DNS_SERVER "$entry" AAAA 2>/dev/null | grep -E '^[0-9a-fA-F:]+$')
+            ips=$(dig +short @$DNS_SERVER_PARSE "$entry" A 2>/dev/null | grep -E '^[0-9\.]+$')
+            ips_v6=$(dig +short @$DNS_SERVER_PARSE "$entry" AAAA 2>/dev/null | grep -E '^[0-9a-fA-F:]+$')
             
             if [ -n "$ips" ]; then
                 echo "$ips" >> "$TMP_IPS_V4"
