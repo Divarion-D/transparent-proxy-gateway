@@ -7,8 +7,8 @@ source config.sh || {
 }
 
 init_dirs() {
-    mkdir -p "$LOG_DIR" "$CONFIG_DIR" "$SCRIPTS_DIR" "$REDSOCKS_LOG_DIR" "$ROUTING_DIR"
-    touch "$DOMAIN_LIST" "$IPS_LIST"
+    mkdir -p "$LOG_DIR" "$USER_LIST_DIR" "$SCRIPTS_DIR" "$REDSOCKS_LOG_DIR" "$ROUTING_DIR"
+    touch "$USER_LIST_DIR/domains.txt" "$USER_LIST_DIR/ips.txt"
 }
 
 log_message() {
@@ -216,12 +216,12 @@ configure_wan() {
 configure_firewall() {
     log_message "Создание ipset ${IPSET_NAME}_v4"
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
-        ipset create "$IPSET_NAME" hash:net family inet timeout 0 || log_message "Ошибка создания ipset IPv4"
+        ipset create "$IPSET_NAME" hash:net maxelem $IPSET_MAX_ELEMENTS family inet timeout 0 || log_message "Ошибка создания ipset IPv4"
     fi
 
     log_message "Создание ipset ${IPSET_NAME}_v6"
     if ! ipset list "${IPSET_NAME}_v6" >/dev/null 2>&1; then
-        ipset create "${IPSET_NAME}_v6" hash:net family inet6 timeout 0 || log_message "Ошибка создания ipset IPv6"
+        ipset create "${IPSET_NAME}_v6" hash:net maxelem $IPSET_MAX_ELEMENTS family inet6 timeout 0 || log_message "Ошибка создания ipset IPv6"
     fi
 
     # Если WAN интерфейс не указан
@@ -283,10 +283,12 @@ add_update_script_to_cron() {
 
     # Добавляем задание в cron: запуск при старте системы и каждые 3 часа
     cat >/etc/cron.d/proxy_update <<EOF
-# Запуск при старте системы
+# Run in start system
+@reboot root $SCRIPTS_DIR/create_ru_list.sh
 @reboot root $SCRIPTS_DIR/update_ips.sh
 
-# Запуск каждые 3 часа
+# Run every 3 hours
+0 */3 * * * root $SCRIPTS_DIR/create_ru_list.sh
 0 */3 * * * root $SCRIPTS_DIR/update_ips.sh
 EOF
 

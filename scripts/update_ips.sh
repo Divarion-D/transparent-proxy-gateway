@@ -25,7 +25,9 @@ validate_ipv6() {
 }
 
 validate_ipv6_cidr() {
-    [[ "$1" =~ ^([0-9a-fA-F:]+:+)+[0-9a-fA-F]+/([0-9]{1,3})$ ]] && return 0
+    local ipv6_cidr_regex='^([0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4}){0,7}|::|([0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4}){0,5})?::([0-9a-fA-F]{1,4}(:[0-9a-fA-F]{1,4}){0,5})?)/([0-9]|[1-9][0-9]|1[0-1][0-9]|12[0-8])$'
+
+    [[ "$1" =~ $ipv6_cidr_regex ]] && return 0
     return 1
 }
 
@@ -79,7 +81,7 @@ process_file() {
     done < <(grep -v -e '^[[:space:]]*$' -e '^#' "$file")
 }
 
-for file in "$ROUTING_DIR"/* "$DOMAIN_LIST" "$IPS_LIST"; do
+for file in "$ROUTING_DIR"/* "$USER_LIST_DIR"/*; do
     [ -f "$file" ] && has_valid_entries "$file" && process_file "$file"
 done
 
@@ -88,31 +90,28 @@ sort -u "$TMP_CIDR_V4" >> "$TMP_CACHE_V4"
 sort -u "$TMP_IPS_V6" > "$TMP_CACHE_V6"
 sort -u "$TMP_CIDR_V6" >> "$TMP_CACHE_V6"
 
-mv "$TMP_CACHE_V4" "$CACHE_FILE_V4"
-mv "$TMP_CACHE_V6" "$CACHE_FILE_V6"
-
-if [ -s "$CACHE_FILE_V4" ]; then
+if [ -s "$TMP_CACHE_V4" ]; then
     log "Обновление ipset $IPSET_NAME"
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
-        ipset create "$IPSET_NAME" hash:net family inet timeout 0 || log "Ошибка создания ipset IPv4"
+        ipset create "$IPSET_NAME" hash:net maxelem $IPSET_MAX_ELEMENTS family inet timeout 0 || log "Ошибка создания ipset IPv4"
     else
         ipset flush "$IPSET_NAME" || log "Ошибка очистки ipset IPv4"
     fi
     while read -r ip; do
         ipset add "$IPSET_NAME" "$ip" || log "Ошибка добавления IPv4: $ip"
-    done < "$CACHE_FILE_V4"
+    done < "$TMP_CACHE_V4"
 fi
 
-if [ -s "$CACHE_FILE_V6" ]; then
+if [ -s "$TMP_CACHE_V6" ]; then
     log "Обновление ipset ${IPSET_NAME}_v6"
     if ! ipset list "${IPSET_NAME}_v6" >/dev/null 2>&1; then
-        ipset create "${IPSET_NAME}_v6" hash:net family inet6 timeout 0 || log "Ошибка создания ipset IPv6"
+        ipset create "${IPSET_NAME}_v6" hash:net maxelem $IPSET_MAX_ELEMENTS family inet6 timeout 0 || log "Ошибка создания ipset IPv6"
     else
         ipset flush "${IPSET_NAME}_v6" || log "Ошибка очистки ipset IPv6"
     fi
     while read -r ip; do
         ipset add "${IPSET_NAME}_v6" "$ip" || log "Ошибка добавления IPv6: $ip"
-    done < "$CACHE_FILE_V6"
+    done < "$TMP_CACHE_V6"
 fi
 
 rm -f "$TMP_IPS_V4" "$TMP_IPS_V6" "$TMP_CIDR_V4" "$TMP_CIDR_V6" "$TMP_CACHE_V4" "$TMP_CACHE_V6"
