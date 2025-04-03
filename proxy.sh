@@ -39,7 +39,7 @@ check_root() {
 install_dependencies() {
     log_message "Установка зависимостей..."
     apt update -y 2>&1 | tee -a "$LOG_FILE"
-    apt install -y ipset redsocks network-manager isc-dhcp-server net-tools iproute2 iptables-persistent curl jq 2>&1 | tee -a "$LOG_FILE"
+    apt install -y ipset redsocks network-manager isc-dhcp-server net-tools iproute2 iptables-persistent ipset-persistent curl jq 2>&1 | tee -a "$LOG_FILE"
 }
 
 select_interfaces() {
@@ -270,12 +270,48 @@ configure_firewall() {
     # Сохраняем изменения и включаем службу
     netfilter-persistent save 2>&1 | tee -a "$LOG_FILE"
     systemctl enable netfilter-persistent
+
+    # Сохраняем ipset правила
+    echo "create $IPSET_NAME hash:net family inet maxelem $IPSET_MAX_ELEMENTS" >/etc/ipsets.conf
+    ipset save "$IPSET_NAME" >>/etc/ipsets.conf
+
+    echo "create ${IPSET_NAME}_v6 hash:net family inet6 maxelem $IPSET_MAX_ELEMENTS" >>/etc/ipsets.conf
+    ipset save "${IPSET_NAME}_v6" >>/etc/ipsets.conf
+
+    # Автозагрузка ipset
+    cat >/etc/systemd/system/ipset-persistent.service <<EOF
+[Unit]
+Description=Load ipsets
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/sbin/ipset restore -f /etc/ipsets.conf
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl enable ipset-persistent
+
+    
 }
 
 configure_ip_forwarding() {
     log_message "Включение IP Forwarding..."
-    sysctl -w net.ipv4.ip_forward=1 2>&1 | tee -a "$LOG_FILE"
-    echo "net.ipv4.ip_forward=1" >>/etc/sysctl.conf
+    
+    # Проверка и добавление параметра для IPv4
+    if ! grep -q "^net.ipv4.ip_forward=1" /etc/sysctl.conf; then
+        echo "net.ipv4.ip_forward=1" >> /etc/sysctl.conf
+    fi
+    
+    # Проверка и добавление параметра для IPv6
+    if ! grep -q "^net.ipv6.conf.all.forwarding=1" /etc/sysctl.conf; then
+        echo "net.ipv6.conf.all.forwarding=1" >> /etc/sysctl.conf
+    fi
+    
+    # Применение изменений
+    sysctl -p
 }
 
 add_update_script_to_cron() {
@@ -307,6 +343,8 @@ install() {
     update_ips
     configure_firewall
     configure_ip_forwarding
+    # Включение критически важных сервисов
+    systemctl enable systemd-networkd ipset-persistent
     log_message "Установка завершена! Рекомендуется перезагрузка."
 }
 
