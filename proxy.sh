@@ -152,67 +152,6 @@ EOF
     systemctl enable redsocks --now 2>&1 | tee -a "$LOG_FILE"
 }
 
-configure_wan() {
-    log_message "Настройка WAN подключения..."
-
-    echo "Выберите тип подключения:"
-    select WAN_TYPE in "DHCP" "Static-IP" "PPPoE" "L2TP"; do
-        case $WAN_TYPE in
-        "DHCP")
-            log_message "Используется DHCP..."
-            nmcli con show | grep -q "WAN" && nmcli con mod WAN ipv4.method auto || nmcli con add type ethernet con-name WAN ifname $WAN_IFACE ipv4.method auto
-            break
-            ;;
-        "Static-IP")
-            read -p "IP/Маска (например 192.168.1.100/24): " STATIC_IP
-            read -p "Шлюз: " GATEWAY
-            read -p "DNS серверы (разделенные запятой): " DNS_SERVERS
-
-            nmcli con add type ethernet con-name WAN ifname $WAN_IFACE \
-                ipv4.addresses "$STATIC_IP" \
-                ipv4.gateway "$GATEWAY" \
-                ipv4.dns "$DNS_SERVERS" \
-                ipv4.method manual
-            break
-            ;;
-        "PPPoE")
-            apt install -y pppoeconf >>"$LOG_FILE" 2>&1
-            read -p "Логин PPPoE: " PPPOE_USER
-            read -s -p "Пароль PPPoE: " PPPOE_PASS
-
-            nmcli con add type pppoe con-name WAN ifname $WAN_IFACE \
-                username "$PPPOE_USER" \
-                password "$PPPOE_PASS"
-            break
-            ;;
-        "L2TP")
-            apt install -y network-manager-l2tp >>"$LOG_FILE" 2>&1
-            read -p "Сервер L2TP: " L2TP_SERVER
-            read -p "Пользователь: " L2TP_USER
-            read -s -p "Пароль: " L2TP_PASS
-            read -p "PSK ключ: " L2TP_PSK
-
-            nmcli con add type vpn \
-                con-name WAN \
-                ifname $WAN_IFACE \
-                vpn-type l2tp \
-                vpn.data \
-                "gateway=$L2TP_SERVER, user=$L2TP_USER, password-flags=1, ipsec-psk=$L2TP_PSK"
-            break
-            ;;
-        *) echo "Неверный выбор" ;;
-        esac
-    done
-
-    nmcli con mod WAN connection.autoconnect yes
-    nmcli con up WAN 2>&1 | tee -a "$LOG_FILE"
-
-    if ! ping -c 3 -I $WAN_IFACE 8.8.8.8 &>>"$LOG_FILE"; then
-        log_message "Ошибка подключения!"
-        exit 1
-    fi
-}
-
 configure_firewall() {
     log_message "Создание ipset ${IPSET_NAME}_v4"
     if ! ipset list "$IPSET_NAME" >/dev/null 2>&1; then
@@ -337,7 +276,6 @@ install() {
     select_interfaces
     configure_netplan
     configure_dhcp
-    configure_wan
     configure_redsocks
     add_update_script_to_cron
     update_ips
@@ -409,12 +347,6 @@ main() {
         LOG_FILE="$LOG_DIR/uninstall-$(date +%Y%m%d-%H%M%S).log"
         check_root
         uninstall
-        ;;
-    "--wan")
-        LOG_FILE="$LOG_DIR/wan-$(date +%Y%m%d-%H%M%S).log"
-        check_root
-        select_interfaces
-        configure_wan
         ;;
     "--update-ips")
         LOG_FILE="$LOG_DIR/update-$(date +%Y%m%d-%H%M%S).log"
